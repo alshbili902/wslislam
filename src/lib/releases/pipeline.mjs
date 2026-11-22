@@ -13,24 +13,6 @@ function buildSupabaseHeaders(serviceKey, prefer = "return=representation") {
   };
 }
 
-async function fetchWithRetry(fetchImpl, url, init = {}, attempts = 3) {
-  let lastErr;
-  for (let i = 0; i < attempts; i += 1) {
-    try {
-      return await fetchImpl(url, {
-        ...init,
-        signal: init.signal ?? AbortSignal.timeout(15000),
-      });
-    } catch (err) {
-      lastErr = err;
-      if (i + 1 < attempts) {
-        await new Promise((r) => setTimeout(r, 800 * (i + 1)));
-      }
-    }
-  }
-  throw lastErr;
-}
-
 export function parseCloudflareSummaryIds(summary = "") {
   const buildMatch = String(summary).match(/Build ID:\s*\[?([a-f0-9-]{8,64})\]?/i);
   const versionMatch = String(summary).match(/Version ID:\s*([a-f0-9-]{8,64})/i);
@@ -49,18 +31,17 @@ function isSchemaColumnMissingError(errText = "") {
 }
 
 function toLegacyReleasePayload(record) {
-  const omit = new Set([
-    "release_notes",
-    "deployment_id",
-    "deployment_status",
-    "verification_status",
-    "verification_error",
-    "published_at",
-    "is_published",
-  ]);
-  return Object.fromEntries(
-    Object.entries(record).filter(([key]) => !omit.has(key))
-  );
+  const {
+    release_notes: _rn,
+    deployment_id: _did,
+    deployment_status: _ds,
+    verification_status: _vs,
+    verification_error: _ve,
+    published_at: _pa,
+    is_published: _ip,
+    ...legacyFields
+  } = record;
+  return legacyFields;
 }
 
 export async function fetchLatestVerifiedRelease({
@@ -68,8 +49,7 @@ export async function fetchLatestVerifiedRelease({
   serviceKey,
   fetchImpl = fetch,
 }) {
-  const res = await fetchWithRetry(
-    fetchImpl,
+  const res = await fetchImpl(
     `${supabaseUrl}/rest/v1/platform_releases?is_published=eq.true&verification_status=eq.verified&select=id,commit_sha,release_version,published_at,created_at&order=published_at.desc&limit=1`,
     { headers: buildSupabaseHeaders(serviceKey, "") }
   );
@@ -79,8 +59,7 @@ export async function fetchLatestVerifiedRelease({
   }
   const errBody = await res.text();
   if (isSchemaColumnMissingError(errBody)) {
-    const legacyRes = await fetchWithRetry(
-      fetchImpl,
+    const legacyRes = await fetchImpl(
       `${supabaseUrl}/rest/v1/platform_releases?release_status=eq.published&select=id,commit_sha,release_version,deployed_at,created_at&order=deployed_at.desc&limit=1`,
       { headers: buildSupabaseHeaders(serviceKey, "") }
     );
@@ -97,8 +76,7 @@ export async function fetchCandidateByCommit({
   commitSha,
   fetchImpl = fetch,
 }) {
-  const res = await fetchWithRetry(
-    fetchImpl,
+  const res = await fetchImpl(
     `${supabaseUrl}/rest/v1/platform_releases?commit_sha=eq.${encodeURIComponent(commitSha)}&select=id,commit_sha,release_version,is_published,verification_status,release_status,deployment_status,created_at&limit=1`,
     { headers: buildSupabaseHeaders(serviceKey, "") }
   );
@@ -108,8 +86,7 @@ export async function fetchCandidateByCommit({
   }
   const errBody = await res.text();
   if (isSchemaColumnMissingError(errBody)) {
-    const legacyRes = await fetchWithRetry(
-      fetchImpl,
+    const legacyRes = await fetchImpl(
       `${supabaseUrl}/rest/v1/platform_releases?commit_sha=eq.${encodeURIComponent(commitSha)}&select=id,commit_sha,release_version,release_status,created_at&limit=1`,
       { headers: buildSupabaseHeaders(serviceKey, "") }
     );
@@ -275,7 +252,7 @@ export async function waitForCloudflareDeployment({
   pollIntervalMs = 8000,
   fetchImpl = fetch,
   sleepImpl = (ms) => new Promise((r) => setTimeout(r, ms)),
-  onLog = () => {},
+  onLog = () => { },
 }) {
   const deadline = Date.now() + timeoutSec * 1000;
   const ghHeaders = {
@@ -421,7 +398,7 @@ export async function verifyLiveProductionVersion({
   pollIntervalMs = 6000,
   fetchImpl = fetch,
   sleepImpl = (ms) => new Promise((r) => setTimeout(r, ms)),
-  onLog = () => {},
+  onLog = () => { },
 }) {
   const expectedSha = String(commitSha || "").trim().toLowerCase();
   const deadline = Date.now() + timeoutSec * 1000;
@@ -537,38 +514,38 @@ export async function finalizeCandidateStatus({
   const nowIso = new Date().toISOString();
   const patch = verified
     ? {
-        is_published: true,
-        verification_status: "verified",
-        deployment_status: "deployed",
-        release_status: "published",
-        deployment_id: deploymentId || checkId || null,
-        deployment_check_id: checkId || null,
-        deployment_url: detailsUrl || null,
-        published_at: nowIso,
-        deployed_at: nowIso,
-        verification_error: null,
-        updated_at: nowIso,
-      }
+      is_published: true,
+      verification_status: "verified",
+      deployment_status: "deployed",
+      release_status: "published",
+      deployment_id: deploymentId || checkId || null,
+      deployment_check_id: checkId || null,
+      deployment_url: detailsUrl || null,
+      published_at: nowIso,
+      deployed_at: nowIso,
+      verification_error: null,
+      updated_at: nowIso,
+    }
     : superseded
       ? {
-          is_published: false,
-          verification_status: "rejected",
-          deployment_status: "superseded",
-          release_status: "superseded",
-          verification_error: errorReason || "Superseded by newer production release",
-          updated_at: nowIso,
-        }
+        is_published: false,
+        verification_status: "rejected",
+        deployment_status: "superseded",
+        release_status: "superseded",
+        verification_error: errorReason || "Superseded by newer production release",
+        updated_at: nowIso,
+      }
       : {
-          is_published: false,
-          verification_status: "failed",
-          deployment_status: "failed",
-          release_status: "failed",
-          deployment_id: deploymentId || null,
-          deployment_check_id: checkId || null,
-          deployment_url: detailsUrl || null,
-          verification_error: errorReason || "Production verification failed",
-          updated_at: nowIso,
-        };
+        is_published: false,
+        verification_status: "failed",
+        deployment_status: "failed",
+        release_status: "failed",
+        deployment_id: deploymentId || null,
+        deployment_check_id: checkId || null,
+        deployment_url: detailsUrl || null,
+        verification_error: errorReason || "Production verification failed",
+        updated_at: nowIso,
+      };
 
   const url = verified
     ? `${supabaseUrl}/rest/v1/platform_releases?commit_sha=eq.${encodeURIComponent(commitSha)}&is_published=eq.false`
